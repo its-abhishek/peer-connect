@@ -135,13 +135,32 @@ export function useWebRTC(config: UseWebRTCConfig): UseWebRTCReturn {
   }, [addTracksToPeer]);
 
   const startCall = useCallback(async (users: User[]): Promise<void> => {
-    setCallStatus('connecting');
-    const stream = await getLocalStream(true, false);
-    if (stream) {
-      localStreamRef.current = stream;
-      setLocalStream(stream);
+    try {
+      console.log('[WebRTC] Starting call with', users.length, 'users');
+      setCallStatus('connecting');
+      const stream = await getLocalStream(true, false);
+      if (stream) {
+        console.log('[WebRTC] Got local stream in startCall');
+        localStreamRef.current = stream;
+        setLocalStream(stream);
+      } else {
+        console.error('[WebRTC] Failed to get local stream in startCall');
+      }
+      
+      if (users && users.length > 0) {
+        // Connect to existing users with staggered delays to avoid race conditions
+        for (let i = 0; i < users.length; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 100 * i));
+          await connectToPeer(users[i]);
+        }
+      } else {
+        console.log('[WebRTC] No users to connect to, just setting up local stream');
+        setCallStatus('connected');
+      }
+    } catch (error) {
+      console.error('Error starting call:', error);
+      setCallStatus('idle');
     }
-    await Promise.all(users.map((user) => connectToPeer(user)));
   }, [connectToPeer]);
 
   const connectToUser = useCallback(async (peerId: string, displayName: string) => {
@@ -183,30 +202,43 @@ export function useWebRTC(config: UseWebRTCConfig): UseWebRTCReturn {
   }, [isAudioEnabled]);
 
   const toggleVideo = useCallback(async () => {
-    if (isVideoEnabled) {
-      toggleVideoTrack(localStreamRef.current, false);
-      setIsVideoEnabled(false);
-      setMediaType('voice');
-    } else {
-      const stream = await getLocalStream(true, true);
-      if (stream) {
-        if (localStreamRef.current) {
-          for (const t of localStreamRef.current.getVideoTracks()) {
-            t.stop();
-            localStreamRef.current.removeTrack(t);
+    try {
+      if (isVideoEnabled) {
+        toggleVideoTrack(localStreamRef.current, false);
+        setIsVideoEnabled(false);
+        setMediaType('voice');
+        console.log('[WebRTC] Video disabled');
+      } else {
+        console.log('[WebRTC] Enabling video...');
+        const stream = await getLocalStream(true, true);
+        if (stream) {
+          console.log('[WebRTC] Got new stream with video');
+          if (localStreamRef.current) {
+            for (const t of localStreamRef.current.getVideoTracks()) {
+              t.stop();
+              localStreamRef.current.removeTrack(t);
+            }
+            for (const t of stream.getVideoTracks()) {
+              localStreamRef.current.addTrack(t);
+            }
+            // Only call release if it exists (native only)
+            if (typeof (stream as any).release === 'function') {
+              (stream as any).release();
+            }
+          } else {
+            localStreamRef.current = stream;
           }
-          for (const t of stream.getVideoTracks()) {
-            localStreamRef.current.addTrack(t);
-          }
-          stream.release();
+          setLocalStream(localStreamRef.current);
+          await replaceTrackOnPeers(localStreamRef.current);
+          setIsVideoEnabled(true);
+          setMediaType('video');
+          console.log('[WebRTC] Video enabled');
         } else {
-          localStreamRef.current = stream;
+          console.error('[WebRTC] Failed to get video stream');
         }
-        setLocalStream(localStreamRef.current);
-        await replaceTrackOnPeers(localStreamRef.current);
-        setIsVideoEnabled(true);
-        setMediaType('video');
       }
+    } catch (error) {
+      console.error('[WebRTC] Toggle video error:', error);
     }
   }, [isVideoEnabled, replaceTrackOnPeers]);
 
@@ -232,62 +264,85 @@ export function useWebRTC(config: UseWebRTCConfig): UseWebRTCReturn {
   }, [isScreenSharing, replaceTrackOnPeers]);
 
   const handleOffer = useCallback(async (senderId: string, sdpPayload: SdpPayload) => {
-    if (peersRef.current.has(senderId)) return;
+    try {
+      if (peersRef.current.has(senderId)) {
+        console.warn(`Already have peer connection with ${senderId}`);
+        return;
+      }
 
-    const remoteStream = new MediaStream();
-    setRemoteStreams((prev) => new Map(prev).set(senderId, remoteStream));
+      const remoteStream = new MediaStream();
+      setRemoteStreams((prev) => new Map(prev).set(senderId, remoteStream));
 
-    const pc = createPeerConnection(
-      (candidate) => {
-        configRef.current.sendSignalingMessage({
-          type: 'ice-candidate',
-          senderId: configRef.current.userId,
-          targetId: senderId,
-          payload: candidate,
-        });
-      },
-      (stream) => {
-        for (const track of stream.getTracks()) {
-          remoteStream.addTrack(track);
-        }
-        setRemoteStreams((prev) => new Map(prev));
-      },
-      (state) => {
-        setConnectionQuality(getConnectionQuality(state));
-        if (state === 'connected') {
-          setCallStatus('connected');
-        } else if ((state === 'disconnected' || state === 'failed') && peersRef.current.has(senderId)) {
-          setCallStatus('reconnecting');
-        }
-      },
-    );
+      const pc = createPeerConnection(
+        (candidate) => {
+          configRef.current.sendSignalingMessage({
+            type: 'ice-candidate',
+            senderId: configRef.current.userId,
+            targetId: senderId,
+            payload: candidate,
+          });
+        },
+        (stream) => {
+          for (const track of stream.getTracks()) {
+            remoteStream.addTrack(track);
+          }
+          setRemoteStreams((prev) => new Map(prev));
+        },
+        (state) => {
+          setConnectionQuality(getConnectionQuality(state));
+          if (state === 'connected') {
+            setCallStatus('connected');
+          } else if ((state === 'disconnected' || state === 'failed') && peersRef.current.has(senderId)) {
+            setCallStatus('reconnecting');
+          }
+        },
+      );
 
-    if (localStreamRef.current) {
-      addTracksToPeer(pc, localStreamRef.current);
+      if (localStreamRef.current) {
+        addTracksToPeer(pc, localStreamRef.current);
+      }
+
+      peersRef.current.set(senderId, { pc, peerUserId: senderId });
+      
+      // Set remote description before creating answer
+      await setRemoteDescription(pc, sdpPayload);
+
+      const answer = await createAnswer(pc);
+      configRef.current.sendSignalingMessage({
+        type: 'answer',
+        senderId: configRef.current.userId,
+        targetId: senderId,
+        payload: { sdp: answer.sdp, type: answer.type },
+      });
+    } catch (error) {
+      console.error(`Error handling offer from ${senderId}:`, error);
     }
-
-    peersRef.current.set(senderId, { pc, peerUserId: senderId });
-    await setRemoteDescription(pc, sdpPayload);
-
-    const answer = await createAnswer(pc);
-    configRef.current.sendSignalingMessage({
-      type: 'answer',
-      senderId: configRef.current.userId,
-      targetId: senderId,
-      payload: { sdp: answer.sdp, type: answer.type },
-    });
   }, [addTracksToPeer]);
 
   const handleAnswer = useCallback(async (senderId: string, sdpPayload: SdpPayload) => {
-    const peer = peersRef.current.get(senderId);
-    if (!peer) return;
-    await setRemoteDescription(peer.pc, sdpPayload);
+    try {
+      const peer = peersRef.current.get(senderId);
+      if (!peer) {
+        console.warn(`No peer connection found for ${senderId}`);
+        return;
+      }
+      await setRemoteDescription(peer.pc, sdpPayload);
+    } catch (error) {
+      console.error(`Error handling answer from ${senderId}:`, error);
+    }
   }, []);
 
   const handleIceCandidate = useCallback(async (senderId: string, candidate: IceCandidatePayload) => {
-    const peer = peersRef.current.get(senderId);
-    if (!peer) return;
-    await addIceCandidate(peer.pc, candidate);
+    try {
+      const peer = peersRef.current.get(senderId);
+      if (!peer) {
+        console.warn(`No peer connection found for ICE candidate from ${senderId}`);
+        return;
+      }
+      await addIceCandidate(peer.pc, candidate);
+    } catch (error) {
+      console.error(`Error adding ICE candidate from ${senderId}:`, error);
+    }
   }, []);
 
   const handleUserLeft = useCallback((leftUserId: string) => {

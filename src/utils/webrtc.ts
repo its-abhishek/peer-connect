@@ -104,9 +104,12 @@ export async function getLocalStream(
       audio,
       video: video ? { facingMode: 'user' as const, frameRate: 30, width: 1280, height: 720 } : false,
     };
+    console.log('[WebRTC] getUserMedia constraints:', constraints);
     const stream = await mediaDevices.getUserMedia(constraints as any);
+    console.log('[WebRTC] Got local stream:', stream);
     return stream;
-  } catch {
+  } catch (error) {
+    console.error('[WebRTC] getUserMedia error:', error);
     return null;
   }
 }

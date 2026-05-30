@@ -85,3 +85,37 @@ export interface SignalingConfig {
   roomId?: string;
   displayName: string;
 }
+
+export interface Profile {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+  created_at: string;
+}
+
+export interface Room {
+  id: string;
+  name: string | null;
+  created_by: string;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface RoomParticipant {
+  room_id: string;
+  user_id: string;
+  joined_at: string;
+  left_at: string | null;
+  is_audio_enabled: boolean;
+  is_video_enabled: boolean;
+}
+
+export interface DbMessage {
+  id: number;
+  room_id: string;
+  user_id: string;
+  display_name: string | null;
+  content: string;
+  type: 'chat' | 'join' | 'leave';
+  created_at: string;
+}

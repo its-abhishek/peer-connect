@@ -1,13 +1,14 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
-import type { User, ChatMessage, ServerEvent } from '../types';
+import { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/supabase-js';
+import { supabase } from '../utils/supabase';
+import type { ServerEvent, User, DbMessage } from '../types';
 
 interface UseSignalingConfig {
-  serverUrl: string;
   onMessage: (event: ServerEvent) => void;
 }
 
 interface UseSignalingReturn {
-  connect: (userId: string) => void;
+  connect: (roomId: string) => Promise<void>;
   disconnect: () => void;
   send: (message: object) => void;
   isConnected: boolean;
@@ -15,96 +16,115 @@ interface UseSignalingReturn {
 }
 
 export function useSignaling(config: UseSignalingConfig): UseSignalingReturn {
-  const wsRef = useRef<WebSocket | null>(null);
+  const channelRef = useRef<RealtimeChannel | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const userIdRef = useRef<string>('');
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const shouldReconnectRef = useRef(false);
-
   const onMessageRef = useRef(config.onMessage);
   onMessageRef.current = config.onMessage;
 
-  const handleMessage = useCallback((event: MessageEvent) => {
-    try {
-      const parsed: ServerEvent = JSON.parse(event.data);
-      onMessageRef.current(parsed);
-    } catch (err) {
-      console.error('[Signaling] Failed to parse message:', err);
-    }
+  const connect = useCallback((roomId: string): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
+      }
+
+      setError(null);
+      setIsConnected(false);
+
+      // Timeout after 5 seconds
+      const timeoutId = setTimeout(() => {
+        reject(new Error('Signaling connection timeout'));
+      }, 5000);
+
+      const channel = supabase.channel(`room:${roomId}`, {
+        config: { broadcast: { self: false } },
+      });
+
+      channel
+        .on('broadcast', { event: 'signal' }, ({ payload }) => {
+          onMessageRef.current(payload as ServerEvent);
+        })
+        .on('broadcast', { event: 'chat' }, ({ payload }) => {
+          onMessageRef.current({
+            type: 'chat-message',
+            payload,
+          });
+        })
+        .on('broadcast', { event: 'user-joined' }, ({ payload }) => {
+          onMessageRef.current(payload as ServerEvent);
+        })
+        .on('broadcast', { event: 'user-left' }, ({ payload }) => {
+          onMessageRef.current(payload as ServerEvent);
+        })
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'messages',
+            filter: `room_id=eq.${roomId}`,
+          },
+          (payload: RealtimePostgresChangesPayload<DbMessage>) => {
+            if (payload.new && typeof payload.new === 'object') {
+              const msg = payload.new as DbMessage;
+              onMessageRef.current({
+                type: 'chat-message',
+                payload: {
+                  id: msg.id.toString(),
+                  userId: msg.user_id,
+                  displayName: msg.display_name || 'Unknown',
+                  text: msg.content,
+                  timestamp: new Date(msg.created_at).getTime(),
+                  type: msg.type,
+                },
+              });
+            }
+          },
+        )
+        .subscribe((status) => {
+          console.log('[Signaling] Channel status:', status);
+          if (status === 'SUBSCRIBED') {
+            clearTimeout(timeoutId);
+            setIsConnected(true);
+            setError(null);
+            resolve();
+          } else if (status === 'CHANNEL_ERROR') {
+            clearTimeout(timeoutId);
+            setError('Failed to connect to signaling channel');
+            setIsConnected(false);
+            reject(new Error('Channel error'));
+          } else if (status === 'CLOSED') {
+            setIsConnected(false);
+          }
+        });
+
+      channelRef.current = channel;
+    });
   }, []);
 
-  const connect = useCallback((userId: string) => {
-    userIdRef.current = userId;
-    shouldReconnectRef.current = true;
-
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return;
-    }
-
-    try {
-      const ws = new WebSocket(config.serverUrl);
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        console.log('[Signaling] Connected to server');
-        setIsConnected(true);
-        setError(null);
-      };
-
-      ws.onmessage = handleMessage;
-
-      ws.onclose = (event) => {
-        console.log('[Signaling] Disconnected:', event.code, event.reason);
-        setIsConnected(false);
-
-        if (shouldReconnectRef.current) {
-          reconnectTimeoutRef.current = setTimeout(() => {
-            if (shouldReconnectRef.current && userIdRef.current) {
-              console.log('[Signaling] Attempting reconnection...');
-              connect(userIdRef.current);
-            }
-          }, 3000);
-        }
-      };
-
-      ws.onerror = (event) => {
-        console.error('[Signaling] Error:', event);
-        setError('WebSocket connection error');
-      };
-    } catch (err) {
-      console.error('[Signaling] Failed to create connection:', err);
-      setError('Failed to create WebSocket connection');
-    }
-  }, [config.serverUrl, handleMessage]);
-
   const disconnect = useCallback(() => {
-    shouldReconnectRef.current = false;
-    if (reconnectTimeoutRef.current) {
-      clearTimeout(reconnectTimeoutRef.current);
-      reconnectTimeoutRef.current = null;
-    }
-    if (wsRef.current) {
-      wsRef.current.close();
-      wsRef.current = null;
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current);
+      channelRef.current = null;
     }
     setIsConnected(false);
+    setError(null);
   }, []);
 
   const send = useCallback((message: object) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
+    if (channelRef.current) {
+      channelRef.current.send({
+        type: 'broadcast',
+        event: 'signal',
+        payload: message,
+      });
     }
   }, []);
 
   useEffect(() => {
     return () => {
-      shouldReconnectRef.current = false;
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
+      if (channelRef.current) {
+        supabase.removeChannel(channelRef.current);
       }
     };
   }, []);

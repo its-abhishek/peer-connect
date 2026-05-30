@@ -14,55 +14,47 @@ interface RoomLobbyProps {
   onJoinRoom: (roomId: string, displayName: string) => void;
   isConnecting: boolean;
   error: string | null;
+  displayName: string;
+  onSignOut: () => void;
 }
 
-export default function RoomLobby({ onCreateRoom, onJoinRoom, isConnecting, error }: RoomLobbyProps) {
+export default function RoomLobby({
+  onCreateRoom,
+  onJoinRoom,
+  isConnecting,
+  error,
+  displayName,
+  onSignOut,
+}: RoomLobbyProps) {
   const [roomId, setRoomId] = useState('');
-  const [displayName, setDisplayName] = useState('');
   const [activeTab, setActiveTab] = useState<'create' | 'join'>('create');
 
   const handleCreate = useCallback(() => {
-    const name = displayName.trim();
-    if (!name) {
-      Alert.alert('Required', 'Please enter a display name');
-      return;
-    }
-    onCreateRoom(name);
+    onCreateRoom(displayName);
   }, [displayName, onCreateRoom]);
 
   const handleJoin = useCallback(() => {
-    const name = displayName.trim();
     const room = roomId.trim().toUpperCase();
-    if (!name) {
-      Alert.alert('Required', 'Please enter a display name');
-      return;
-    }
     if (!room) {
       Alert.alert('Required', 'Please enter a room ID');
       return;
     }
-    onJoinRoom(room, name);
+    onJoinRoom(room, displayName);
   }, [displayName, roomId, onJoinRoom]);
 
   return (
     <View style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.logo}>🎮 PeerConnect</Text>
-        <Text style={styles.subtitle}>Voice & Video Calls</Text>
+        <View style={styles.headerTop}>
+          <Text style={styles.logo}>PeerConnect</Text>
+          <TouchableOpacity style={styles.signOutButton} onPress={onSignOut}>
+            <Text style={styles.signOutText}>Sign Out</Text>
+          </TouchableOpacity>
+        </View>
+        <Text style={styles.subtitle}>Welcome, {displayName}</Text>
       </View>
 
       <View style={styles.form}>
-        <Text style={styles.label}>Display Name</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter your name"
-          placeholderTextColor="#8E8E93"
-          value={displayName}
-          onChangeText={setDisplayName}
-          autoCapitalize="words"
-          maxLength={30}
-        />
-
         <View style={styles.tabContainer}>
           <TouchableOpacity
             style={[styles.tab, activeTab === 'create' && styles.activeTab]}
@@ -117,7 +109,7 @@ export default function RoomLobby({ onCreateRoom, onJoinRoom, isConnecting, erro
 
       <View style={styles.info}>
         <Text style={styles.infoText}>
-          Rooms are temporary and deleted when empty.
+          Rooms are persistent. Share the 8-character room ID to invite others.
         </Text>
       </View>
     </View>
@@ -132,14 +124,29 @@ const styles = StyleSheet.create({
     padding: 24,
   },
   header: {
-    alignItems: 'center',
     marginBottom: 48,
+  },
+  headerTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
   },
   logo: {
     fontSize: 28,
     fontWeight: '700',
     color: '#FFFFFF',
-    marginBottom: 8,
+  },
+  signOutButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#3A3A3C',
+  },
+  signOutText: {
+    color: '#FF453A',
+    fontSize: 14,
+    fontWeight: '600',
   },
   subtitle: {
     fontSize: 16,
@@ -150,12 +157,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 24,
     gap: 16,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#AEAEB2',
-    marginBottom: -8,
   },
   input: {
     backgroundColor: '#3A3A3C',
