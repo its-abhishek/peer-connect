@@ -1,7 +1,7 @@
 {
   "expo": {
-    "name": "rune-webrtc",
-    "slug": "rune-webrtc",
+    "name": "PeerConnect",
+    "slug": "peerconnect",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
